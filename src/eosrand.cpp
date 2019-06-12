@@ -8,10 +8,11 @@ uint8_t eosrand::newevent(name event_name, uint32_t prize_rank, name owner, stri
    events idx(_self, owner.value);
    check(idx.find(event_name.value) == idx.end(), "existing event name");
 
-   auto mb = (tapos_block_prefix() * tapos_block_num() * reinterpret_cast<const uint32_t>(& srv_seed));
+   auto mb = (tapos_block_prefix() * tapos_block_num() * reinterpret_cast<const uint32_t>(&srv_seed));
    const char *mc = reinterpret_cast<const char *>(&mb); //mc = mixed Char
    auto seed = sha256((char *)mc, sizeof(mc));
    const char *p64 = reinterpret_cast<const char *>(&seed);
+   //uint8_t random_number = (int8_t)p64[0];
    uint8_t random_number = (abs((int8_t)p64[0]) % (10)) + 1;
 
    idx.emplace(owner, [&](auto& gw) {
