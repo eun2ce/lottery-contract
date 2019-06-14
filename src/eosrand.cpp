@@ -35,6 +35,22 @@ checksum256 eosrand::mixseed(const checksum256& sseed, checksum256& useed) const
     return eosio::sha256( (char *)&seeds.seed1, sizeof(seeds.seed1) * 2);
 }
 
+void eosrand::setbox(name owner, name contract_name, const std::vector<grade>& lbox) {
+   require_auth(owner);
+
+   check(lbox.size(), "no settings on luckybox");
+
+   events idx(_self, owner.value);
+   check(idx.find(contract_name.value) == idx.end(), "existing contract name");
+
+   for (auto o : lbox) {
+      luckybox.push_back({o.reward, o.value});
+   }
+}
+
+void eosrand::newgacha(name owner, name contract_name, checksum256 rseed, uint8_t lucknum) {
+}
+
 void eosrand::newevent(name owner, name contract_name, name participant, extended_asset value, checksum256 oseed, time_point_sec timelock) {
    require_auth(owner);
 
@@ -83,9 +99,9 @@ void eosrand::setownseed(name owner, name contract_name, checksum256 oseed) {
 
    auto result = mixseed(it.seed, oseed);
 
-   idx.modify(owner, ram_,[&](auto& en){
-         en.seed = r_seed;
-         //en.activated = true;
+   idx.modify(it, same_payer,[&](auto& en){
+         en.seed = result;
+         en.activated = true;
    });
 }
 

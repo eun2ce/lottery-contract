@@ -7,6 +7,15 @@ using namespace std;
 class [[eosio::contract]] eosrand : public contract {
 public:
    using contract::contract;
+   //using grade_value = std::pair<asset, uint64_t>;
+
+   struct grade {
+      asset reward;
+      uint64_t value;
+
+      EOSLIB_SERIALIZE(grade, (reward)(value))
+   };
+   std::vector<grade> luckybox;
 
    [[eosio::on_notify("*::transfer")]]
    void on_transfer(name from, name to, asset quantity, string memo);
@@ -24,6 +33,11 @@ public:
    [[eosio::action]]
    bool hashcheck(const checksum256 hash) const;
 
+   [[eosio::action]]
+   void setbox(name owner, name contract_name, const std::vector<grade>& lbox);
+
+   [[eosio::action]]
+   void newgacha(name owner, name contract_name, checksum256 rseed, uint8_t lucknum);
    //vector lucky box
    //[[eosio::action]]
    //newgacha(gamename, username, contrract_name, hash, luckybox number);
@@ -40,10 +54,12 @@ public:
    [[eosio::action]]
    void withdraw(name owner, name contract_name, checksum256 preimage);
 
+
    struct st_seeds {
       checksum256 seed1;
       checksum256 seed2;
    };
+
 
    struct [[eosio::table]] event {
       name contract_name;
