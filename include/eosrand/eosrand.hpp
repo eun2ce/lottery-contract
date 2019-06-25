@@ -1,5 +1,6 @@
 #include <eosio/eosio.hpp>
 #include <eosio/asset.hpp>
+#include <eosio/crypto.hpp>
 
 using namespace eosio;
 using namespace std;
@@ -7,19 +8,50 @@ using namespace std;
 class [[eosio::contract]] eosrand : public contract {
 public:
    using contract::contract;
-   //using grade_value = std::pair<asset, uint64_t>;
+
+   //static microseconds min_duration = 3 * 24 * 3600 * 1000; // 3 days
 
    struct grade {
+      uint32_t score;
       asset reward;
-      uint64_t value;
+      optional<uint32_t> limit;
 
-      EOSLIB_SERIALIZE(grade, (reward)(value))
+      EOSLIB_SERIALIZE(grade, (score)(reward)(limit))
    };
-   std::vector<grade> luckybox;
 
-   [[eosio::on_notify("*::transfer")]]
-   void on_transfer(name from, name to, asset quantity, string memo);
-   typedef action_wrapper<"transfer"_n, &eosrand::on_transfer> transfer_action;
+   struct [[eosio::table]] scheme {
+      name scheme_name;
+      extended_asset budget;
+      time_point_sec expiration;
+      uint8_t precision;
+      vector<grade> grades;
+      asset out;
+      vector<uint32_t> out_count;
+      bool activated = false;
+
+      uint64_t primary_key()const { return scheme_name.value; }
+
+      EOSLIB_SERIALIZE(scheme, (scheme_name)(budget)(expiration)(precision)(grades)(out)(out_count)(activated))
+   };
+
+   struct [[eosio::table]] chance {
+      uint64_t id;
+      name owner;
+      name dealer;
+      name scheme_name;
+      checksum256 dseedhash;
+      checksum256 oseed;
+
+      uint64_t primary_key()const { return id; }
+      uint64_t by_owner()const { return owner.value; }
+
+      EOSLIB_SERIALIZE(chance, (id)(owner)(dealer)(scheme_name)(dseedhash)(oseed))
+   };
+
+   typedef multi_index<"scheme"_n, scheme> schemes;
+   typedef multi_index<"chance"_n, chance,
+              indexed_by<"owner"_n, const_mem_fun<chance, uint64_t, &chance::by_owner>>
+           > chances;
 
    // dummy action to resolve cdt v1.6.1 issue on notify handler
    [[eosio::on_notify("eosio.token::transfer")]]
@@ -27,56 +59,30 @@ public:
       on_transfer(from, to, quantity, memo);
    }
 
-   [[eosio::action]]
-   checksum256 mixseed(const checksum256& sseed, checksum256& useed) const;
+   [[eosio::on_notify("*::transfer")]]
+   void on_transfer(name from, name to, asset quantity, string memo);
+   typedef action_wrapper<"transfer"_n, &eosrand::on_transfer> transfer_action;
+
+	[[eosio::action]]
+	void withdraw(name dealer, name owner, uint64_t id, checksum256 oseed);
+
+   uint64_t mixseed(const checksum256& dseed, const checksum256& oseed) const;
 
    [[eosio::action]]
-   bool hashcheck(const checksum256 hash) const;
+   void newscheme(name dealer, name scheme_name, std::vector<grade> &grades, extended_asset budget, time_point_sec expiration, optional<uint8_t> precision);
 
    [[eosio::action]]
-   void setbox(name owner, name contract_name, const std::vector<grade>& lbox);
+   void newchance(name dealer, name scheme_name, name recipient, checksum256 dseedhash, uint64_t id);
 
    [[eosio::action]]
-   void newgacha(name owner, name contract_name, checksum256 rseed, uint8_t lucknum);
-   //vector lucky box
-   //[[eosio::action]]
-   //newgacha(gamename, username, contrract_name, hash, luckybox number);
+   void setoseed(name owner, uint64_t id, checksum256 oseed);
 
    [[eosio::action]]
-   void newevent(name owner, name contract_name, name participant, extended_asset value, checksum256 oseed, time_point_sec timelock);
+   void setdseed(name dealer, uint64_t id, checksum256 dseed);
 
    [[eosio::action]]
-   void setuserseed(name owner, name contract_name, name participant, checksum256 useed);
+   void winreward(name owner, uint64_t id, uint32_t score, extended_asset value);
 
    [[eosio::action]]
-   void setownseed(name owner, name contract_name, checksum256 oseed);
-
-   [[eosio::action]]
-   void withdraw(name owner, name contract_name, checksum256 preimage);
-
-
-   struct st_seeds {
-      checksum256 seed1;
-      checksum256 seed2;
-   };
-
-
-   struct [[eosio::table]] event {
-      name contract_name;
-      name participant;
-      extended_asset value;
-      checksum256 preimage;
-      checksum256 seed;
-      time_point_sec timelock;
-      bool activated;
-
-      uint64_t primary_key()const { return contract_name.value; }
-      EOSLIB_SERIALIZE(event, (contract_name)(participant)(value)(preimage)(seed)(timelock)(activated))
-   };
-
-   typedef multi_index<"event"_n, event> events;
-
-
-   //[[eosio::action]]
-   //uint8_t srand();
+   void raincheck(name owner, uint64_t id, uint32_t score);
 };
