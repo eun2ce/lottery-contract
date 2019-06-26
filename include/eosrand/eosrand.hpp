@@ -20,18 +20,19 @@ public:
    };
 
    struct [[eosio::table]] scheme {
-      name scheme_name;
-      extended_asset budget;
-      time_point_sec expiration;
-      uint8_t precision;
-      vector<grade> grades;
-      asset out;
-      vector<uint32_t> out_count;
-      bool activated = false;
+      name              scheme_name;
+      extended_asset    budget;
+      uint32_t          withdraw_delay_sec = 0;
+      time_point_sec    expiration;
+      uint8_t           precision;
+      vector<grade>     grades;
+      asset             out;
+      vector<uint32_t>  out_count;
+      bool activated    = false;
 
       uint64_t primary_key()const { return scheme_name.value; }
 
-      EOSLIB_SERIALIZE(scheme, (scheme_name)(budget)(expiration)(precision)(grades)(out)(out_count)(activated))
+      EOSLIB_SERIALIZE(scheme, (scheme_name)(budget)(withdraw_delay_sec)(expiration)(precision)(grades)(out)(out_count)(activated))
    };
 
    struct [[eosio::table]] chance {
@@ -65,11 +66,12 @@ public:
 
 	[[eosio::action]]
 	void withdraw(name dealer, name owner, uint64_t id, checksum256 oseed);
+   typedef action_wrapper<"withdraw"_n, &eosrand::withdraw> withdraw_processed;
 
    uint64_t mixseed(const checksum256& dseed, const checksum256& oseed) const;
 
    [[eosio::action]]
-   void newscheme(name dealer, name scheme_name, std::vector<grade> &grades, extended_asset budget, time_point_sec expiration, optional<uint8_t> precision);
+   void newscheme(name dealer, name scheme_name, std::vector<grade> &grades, extended_asset budget, uint32_t withdraw_delay_sec, time_point_sec expiration, optional<uint8_t> precision);
 
    [[eosio::action]]
    void newchance(name dealer, name scheme_name, name recipient, checksum256 dseedhash, uint64_t id);

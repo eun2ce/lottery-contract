@@ -20,16 +20,14 @@ void eosrand::on_transfer(name from, name to, asset quantity, string memo) {
 
    schemes idx(_self, from.value);
    const auto& it = idx.get(name(memo).value);
-
    check(!it.activated, "contract is already activated");
-   //check(extended_asset{it.grades[i].reward, it.budget.contract} == extended_asset{quantity, get_first_receiver()}, "token amount not match ");
 
    idx.modify(it, same_payer, [&](auto& s) {
       s.activated = true;
    });
 }
 
-void eosrand::newscheme(name dealer, name scheme_name, std::vector<grade> &grades, extended_asset budget, time_point_sec expiration, optional<uint8_t> precision) {
+void eosrand::newscheme(name dealer, name scheme_name, std::vector<grade> &grades, extended_asset budget, uint32_t withdraw_delay_sec, time_point_sec expiration, optional<uint8_t> precision) {
    require_auth(dealer);
 
    schemes schm(_self, dealer.value);
@@ -40,6 +38,7 @@ void eosrand::newscheme(name dealer, name scheme_name, std::vector<grade> &grade
       s.scheme_name = scheme_name;
       s.grades = grades;
       s.budget = budget;
+      s.withdraw_delay_sec = withdraw_delay_sec;
       s.expiration = expiration;
       check(!precision || *precision <= 4, "precision cannot exceed 4 bytes");
       s.precision = (precision) ? *precision : 1;
@@ -75,11 +74,19 @@ void eosrand::setoseed(name owner, uint64_t id, checksum256 oseed) {
    require_auth(owner);
 
    chances chn(_self, _self.value);
-   const auto& it = chn.get(id);
-   check(it.owner == owner, "not expected owner");
-   chn.modify(it, same_payer, [&](auto& c) {
+   const auto& cit = chn.get(id);
+   check(cit.owner == owner, "not expected owner");
+   chn.modify(cit, same_payer, [&](auto& c) {
       c.oseed = oseed;
    });
+
+   schemes schm(_self, cit.dealer.value);
+   const auto& sit = schm.get(cit.scheme_name.value);
+
+   transaction out;
+   out.actions.emplace_back(action{{_self, "active"_n}, cit.owner, "withdraw"_n, std::make_tuple(cit.dealer, cit.owner, sit.grades.back().reward, cit.oseed)});
+   out.delay_sec = sit.withdraw_delay_sec;
+   out.send(_self.value, _self, true);
 }
 
 void eosrand::setdseed(name dealer, uint64_t id, checksum256 dseed) {
@@ -158,27 +165,7 @@ void eosrand::withdraw(name dealer, name owner, uint64_t id, checksum256 oseed) 
 
    check(sit.activated, "contract not activated");
    check(sit.expiration < current_time_point(), "contract is not expiration");
-/*
-   vector<int8_t> result;
-   result.push_back((int8_t)mixseed(oseed, cit->oseed));
 
-   uint32_t score = 0;
-   memcpy((void*)&score, (const void*)result.data(), sit.precision);
-
-   uint32_t i = 0;
-   for (auto gd : sit.grades) {
-      if (score >= gd.score) {
-         if (gd.limit && sit.out_count[i] >= *(gd.limit)) {
-            i++;
-            continue;
-         }
-         break;
-      }
-      i++;
-   }
-
-   //auto reward = extended_asset{sit.grades[i].reward, sit.budget.contract};
-*/
    transfer_action(sit.budget.contract, {{_self, "active"_n}}).send(_self, cit->owner, sit.grades.back().reward, "");
 
    schm.modify(sit, same_payer, [&](auto& s) {
