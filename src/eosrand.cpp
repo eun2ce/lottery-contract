@@ -1,18 +1,14 @@
 #include <eosrand/eosrand.hpp>
-#include <eosio/crypto.hpp>
-#include <eosio/system.hpp>
 #include <eosio/transaction.hpp>
-
-#include <stdlib.h>
 
 using std::string;
 
-uint64_t eosrand::mixseed(const checksum256& dseed, const checksum256& oseed) const {
+vector<int8_t> eosrand::mixseed(const checksum256& dseed, const checksum256& oseed) const {
    std::array<int8_t, 64> data;
    datastream<char*> ds(reinterpret_cast<char*>(data.data()), data.size());
    ds << dseed.extract_as_byte_array();
    ds << oseed.extract_as_byte_array();
-   return (uint64_t)data.data();
+   return std::vector<int8_t>(data.begin(), data.end());
 }
 
 void eosrand::on_transfer(name from, name to, asset quantity, string memo) {
@@ -33,6 +29,7 @@ void eosrand::newscheme(name dealer, name scheme_name, std::vector<grade> &grade
    schemes schm(_self, dealer.value);
    check(schm.find(scheme_name.value) == schm.end(), "existing scheme name");
    check(expiration > current_time_point(), "the expiration time should be in the future");
+   //check(expiration > current_time_point() + min_duration, "the expiration time should be in the future");
 
    schm.emplace(_self, [&](auto& s) {
       s.scheme_name = scheme_name;
@@ -48,7 +45,7 @@ void eosrand::newscheme(name dealer, name scheme_name, std::vector<grade> &grade
 
 }
 
-void eosrand::newchance(name dealer, name scheme_name, name recipient, checksum256 dseedhash, uint64_t id) {
+void eosrand::newchance(name dealer, name scheme_name, name owner, checksum256 dseedhash, optional<uint64_t> id) {
    require_auth(dealer);
 
    schemes schm(_self, dealer.value);
@@ -58,12 +55,14 @@ void eosrand::newchance(name dealer, name scheme_name, name recipient, checksum2
    check(it->out.amount <= it->budget.quantity.amount, "budget exhausted");
 
    chances chn(_self, _self.value);
-   auto cit = chn.find(id);
+
+   auto chance_id = (id) ? *id : chance::hash(dealer, scheme_name, dseedhash);
+   auto cit = chn.find(chance_id);
    check(cit == chn.end(), "existing chance");
 
    chn.emplace(_self, [&](auto& c) {
-      c.id = id;
-      c.owner = recipient;
+      c.id = chance_id;
+      c.owner = owner;
       c.dealer = dealer;
       c.scheme_name = scheme_name;
       c.dseedhash = dseedhash;
@@ -84,9 +83,15 @@ void eosrand::setoseed(name owner, uint64_t id, checksum256 oseed) {
    const auto& sit = schm.get(cit.scheme_name.value);
 
    transaction out;
-   out.actions.emplace_back(action{{_self, "active"_n}, cit.owner, "withdraw"_n, std::make_tuple(cit.dealer, cit.owner, sit.grades.back().reward, cit.oseed)});
+   out.actions.emplace_back(
+         permission_level{ _self, "active"_n},
+         _self,
+         "withdraw"_n,
+         std::make_tuple(cit.dealer, cit.owner, cit.id, cit.oseed)
+   );
    out.delay_sec = sit.withdraw_delay_sec;
-   out.send(_self.value, _self, true);
+   cancel_deferred(cit.owner.value);
+   out.send(cit.owner.value, cit.owner);
 }
 
 void eosrand::setdseed(name dealer, uint64_t id, checksum256 dseed) {
@@ -105,7 +110,9 @@ void eosrand::setdseed(name dealer, uint64_t id, checksum256 dseed) {
    const auto& sit = schm.get(it.scheme_name.value);
 
    vector<int8_t> result;
-   result.push_back((int8_t)mixseed(dseed, it.oseed));
+   sio4::hash_drbg drbg(mixseed(dseed, it.oseed));
+   drbg.generate_block(result, sizeof(result));
+   print(result.data());
 
    uint32_t score = 0;
    memcpy((void*)&score, (const void*)result.data(), sit.precision);
@@ -145,16 +152,8 @@ void eosrand::setdseed(name dealer, uint64_t id, checksum256 dseed) {
    chn.erase(it);
 }
 
-void eosrand::winreward(name owner, uint64_t id, uint32_t score, extended_asset value) {
-   require_auth(_self);
-}
-
-void eosrand::raincheck(name owner, uint64_t id, uint32_t score) {
-   require_auth(_self);
-}
-
 void eosrand::withdraw(name dealer, name owner, uint64_t id, checksum256 oseed) {
-   require_auth(owner);
+   check(has_auth(_self) || has_auth(owner), "Missing required authority");
 
    chances chn(_self, _self.value);
    auto cit = chn.find(id);
@@ -163,6 +162,7 @@ void eosrand::withdraw(name dealer, name owner, uint64_t id, checksum256 oseed) 
    schemes schm(_self, dealer.value);
    const auto& sit = schm.get(cit->scheme_name.value);
 
+   cancel_deferred(cit->owner.value);
    check(sit.activated, "contract not activated");
    check(sit.expiration < current_time_point(), "contract is not expiration");
 
@@ -175,4 +175,12 @@ void eosrand::withdraw(name dealer, name owner, uint64_t id, checksum256 oseed) 
    });
 
    chn.erase(cit);
+}
+
+void eosrand::winreward(name owner, uint64_t id, uint32_t score, extended_asset value) {
+   require_auth(_self);
+}
+
+void eosrand::raincheck(name owner, uint64_t id, uint32_t score) {
+   require_auth(_self);
 }

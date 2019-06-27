@@ -1,0 +1,3 @@
+[submodule "lib/libsio4"]
+	path = lib/libsio4
+	url = https://github.com/3OSiO/LiBSiO4
