@@ -1,7 +1,9 @@
 #include <eosio/eosio.hpp>
 #include <eosio/asset.hpp>
 #include <eosio/crypto.hpp>
+
 #include <sio4/crypto.hpp>
+#include <sio4/multi_index.hpp>
 
 using namespace eosio;
 using namespace std;
@@ -10,7 +12,7 @@ class [[eosio::contract]] eosrand : public contract {
 public:
    using contract::contract;
 
-   const microseconds min_duration =  milliseconds(3 * 24 * 3600); // 3 days
+   //const microseconds min_duration =  3 * 24 * 3600 * 1000; // 3 days
 
    struct grade {
       asset               reward;
@@ -65,6 +67,20 @@ public:
               indexed_by<"owner"_n, const_mem_fun<chance, uint64_t, &chance::by_owner>>
            > chances;
 
+   struct [[eosio::table("withdraws")]] withdrawal_request {
+      uint64_t       id;
+      time_point_sec scheduled_time;
+
+      uint64_t primary_key()const       { return id; }
+      uint64_t by_scheduled_time()const { return static_cast<uint64_t>(scheduled_time.utc_seconds); }
+
+      EOSLIB_SERIALIZE(withdrawal_request, (id)(scheduled_time))
+   };
+
+   typedef multi_index<"withdraws"_n, withdrawal_request,
+           indexed_by<"schedtime"_n, const_mem_fun<withdrawal_request, uint64_t, &withdrawal_request::by_scheduled_time>>
+              > withdraws;
+
    // dummy action to resolve cdt v1.6.1 issue on notify handler
    [[eosio::on_notify("eosio.token::transfer")]]
    void on_eos_transfer(name from, name to, asset quantity, string memo) {
@@ -88,7 +104,8 @@ public:
    void setdseed(name dealer, uint64_t id, checksum256 dseed);
 
 	[[eosio::action]]
-	void withdraw(name dealer, name owner, uint64_t id, checksum256 oseed);
+	void withdraw(name owner, uint64_t id);
+   typedef action_wrapper<"withdraw"_n, &eosrand::withdraw> withdraw_processed;
 
    [[eosio::action]]
    void winreward(name owner, uint64_t id, uint32_t score, extended_asset value);
@@ -96,5 +113,25 @@ public:
    [[eosio::action]]
    void raincheck(name owner, uint64_t id, uint32_t score);
 
+   [[eosio::action]]
+   void clrwithdraws(name owenr, uint64_t id);
+   typedef action_wrapper<"clrwithdraws"_n, &eosrand::clrwithdraws> clear_withdraws;
+
    vector<int8_t> mixseed(const checksum256& dseed, const checksum256& oseed) const;
+
+   class requests : public sio4::multi_index_wrapper<withdraws> {
+   public:
+      using multi_index_wrapper::multi_index_wrapper;
+
+      requests(name code, name owner, uint64_t id)
+         : multi_index_wrapper(code, owner, id)
+      {}
+
+      void refresh_schedule();
+      void clear();
+
+      inline uint64_t id()const  { return id(); }
+      inline name code()const { return code(); }      // _self
+   };
+
 };

@@ -1,6 +1,8 @@
 #include <eosrand/eosrand.hpp>
 #include <eosio/transaction.hpp>
 
+#include "requests.cpp"
+
 using std::string;
 
 vector<int8_t> eosrand::mixseed(const checksum256& dseed, const checksum256& oseed) const {
@@ -28,9 +30,6 @@ void eosrand::newscheme(name dealer, name scheme_name, std::vector<grade> &grade
 
    schemes schm(_self, dealer.value);
    check(schm.find(scheme_name.value) == schm.end(), "existing scheme name");
-   check(expiration > current_time_point(), "the expiration time should be in the future");
-   //check(expiration > current_time_point() + min_duration, "the expiration time should be in the future");
-
    schm.emplace(_self, [&](auto& s) {
       s.scheme_name = scheme_name;
       s.grades = grades;
@@ -42,7 +41,6 @@ void eosrand::newscheme(name dealer, name scheme_name, std::vector<grade> &grade
       s.out.symbol = budget.quantity.symbol;
       s.out_count.resize(grades.size());
    });
-
 }
 
 void eosrand::newchance(name dealer, name scheme_name, name owner, checksum256 dseedhash, optional<uint64_t> id) {
@@ -50,6 +48,7 @@ void eosrand::newchance(name dealer, name scheme_name, name owner, checksum256 d
 
    schemes schm(_self, dealer.value);
    auto it = schm.find(scheme_name.value);
+
    check(it != schm.end(), "scheme not found");
    check(it->expiration > current_time_point(), "scheme expired");
    check(it->out.amount <= it->budget.quantity.amount, "budget exhausted");
@@ -82,6 +81,22 @@ void eosrand::setoseed(name owner, uint64_t id, checksum256 oseed) {
    schemes schm(_self, cit.dealer.value);
    const auto& sit = schm.get(cit.scheme_name.value);
 
+   auto _req = requests(_self, cit.owner, cit.id);
+
+   if(_req) {
+      _req.modify(same_payer, [&](auto& rq) {
+            rq.scheduled_time = time_point_sec(sit.expiration.sec_since_epoch() + sit.withdraw_delay_sec);
+            rq.id = cit.id;
+      });
+   } else {
+      _req.emplace(_self, [&](auto& rq) {
+            rq.scheduled_time = time_point_sec(sit.expiration.sec_since_epoch() + sit.withdraw_delay_sec);
+            rq.id = cit.id;
+      });
+   }
+
+   _req.refresh_schedule();
+/*
    transaction out;
    out.actions.emplace_back(
          permission_level{ _self, "active"_n},
@@ -92,6 +107,7 @@ void eosrand::setoseed(name owner, uint64_t id, checksum256 oseed) {
    out.delay_sec = sit.withdraw_delay_sec;
    cancel_deferred(cit.owner.value);
    out.send(cit.owner.value, cit.owner);
+*/
 }
 
 void eosrand::setdseed(name dealer, uint64_t id, checksum256 dseed) {
@@ -152,14 +168,13 @@ void eosrand::setdseed(name dealer, uint64_t id, checksum256 dseed) {
    chn.erase(it);
 }
 
-void eosrand::withdraw(name dealer, name owner, uint64_t id, checksum256 oseed) {
+void eosrand::withdraw(name owner, uint64_t id) {
    check(has_auth(_self) || has_auth(owner), "Missing required authority");
 
    chances chn(_self, _self.value);
    auto cit = chn.find(id);
-   check(cit->oseed == oseed, "invalid owner seed");
 
-   schemes schm(_self, dealer.value);
+   schemes schm(_self, cit->dealer.value);
    const auto& sit = schm.get(cit->scheme_name.value);
 
    cancel_deferred(cit->owner.value);
@@ -175,6 +190,10 @@ void eosrand::withdraw(name dealer, name owner, uint64_t id, checksum256 oseed) 
    });
 
    chn.erase(cit);
+}
+
+void eosrand::clrwithdraws(name owner, uint64_t id) {
+   requests(_self, owner, id).clear();
 }
 
 void eosrand::winreward(name owner, uint64_t id, uint32_t score, extended_asset value) {
