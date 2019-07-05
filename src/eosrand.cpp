@@ -1,159 +1,212 @@
 #include <eosrand/eosrand.hpp>
-#include <eosio/crypto.hpp>
-#include <eosio/system.hpp>
 #include <eosio/transaction.hpp>
+
+#include <sio4/crypto/drbg.hpp>
+#include "requests.cpp"
 
 using std::string;
 
-bool eosrand::hashcheck(const checksum256 hash) const {
-   auto data = hash.get_array();
-   return data[0] == 0 && data[1] == 0;
+vector<int8_t> eosrand::mixseed(const checksum256& dseed, const checksum256& oseed) const {
+   std::array<int8_t, 64> data;
+   datastream<char*> ds(reinterpret_cast<char*>(data.data()), data.size());
+   ds << dseed.extract_as_byte_array();
+   ds << oseed.extract_as_byte_array();
+   return std::vector<int8_t>(data.begin(), data.end());
 }
 
 void eosrand::on_transfer(name from, name to, asset quantity, string memo) {
    if (from == _self) return;
 
-   events idx(_self, from.value);
+   schemes idx(_self, from.value);
    const auto& it = idx.get(name(memo).value);
-
    check(!it.activated, "contract is already activated");
-   check(hashcheck(it.seed), "not setting user seed");
-   check(it.timelock < current_time_point(), "the expiration time should be in past");
-   check(it.value == extended_asset{quantity, get_first_receiver()}, "token amount not match: " + it.value.quantity.to_string() + "@" + it.value.contract.to_string());
 
-   idx.modify(it, same_payer, [&](auto& en) {
-      en.activated = true;
+   idx.modify(it, same_payer, [&](auto& s) {
+      s.activated = true;
    });
 }
 
-checksum256 eosrand::mixseed(const checksum256& sseed, checksum256& useed) const {
-    st_seeds seeds;
-    seeds.seed1 = sseed;
-    seeds.seed2 = useed;
-    //checksum256 result = eosio::sha256( (char *)&seeds.seed1, sizeof(seeds.seed1) * 2);
-    //print("result: ", result);
-    return eosio::sha256( (char *)&seeds.seed1, sizeof(seeds.seed1) * 2);
+void eosrand::newscheme(name dealer, name scheme_name, std::vector<grade> &grades, extended_asset budget, uint32_t withdraw_delay_sec, time_point_sec expiration, optional<uint8_t> precision) {
+   require_auth(dealer);
+
+   schemes schm(_self, dealer.value);
+   check(schm.find(scheme_name.value) == schm.end(), "existing scheme name");
+   schm.emplace(_self, [&](auto& s) {
+      s.scheme_name = scheme_name;
+      s.grades = grades;
+      s.budget = budget;
+      s.withdraw_delay_sec = withdraw_delay_sec;
+      s.expiration = expiration;
+      check(!precision || *precision <= 4, "precision cannot exceed 4 bytes");
+      s.precision = (precision) ? *precision : 1;
+      s.out.symbol = budget.quantity.symbol;
+      s.out_count.resize(grades.size());
+   });
 }
 
-void eosrand::setbox(name owner, name contract_name, const std::vector<grade>& lbox) {
+void eosrand::newchance(name dealer, name scheme_name, name owner, checksum256 dseedhash, optional<uint64_t> id) {
+   require_auth(dealer);
+
+   schemes schm(_self, dealer.value);
+   auto it = schm.find(scheme_name.value);
+
+   check(it != schm.end(), "scheme not found");
+   check(it->expiration > current_time_point(), "scheme expired");
+   check(it->out.amount <= it->budget.quantity.amount, "budget exhausted");
+
+   chances chn(_self, _self.value);
+
+   auto chance_id = (id) ? *id : chance::hash(dealer, scheme_name, dseedhash);
+   auto cit = chn.find(chance_id);
+   check(cit == chn.end(), "existing chance");
+
+   chn.emplace(_self, [&](auto& c) {
+      c.id = chance_id;
+      c.owner = owner;
+      c.dealer = dealer;
+      c.scheme_name = scheme_name;
+      c.dseedhash = dseedhash;
+   });
+}
+
+void eosrand::setoseed(name owner, uint64_t id, checksum256 oseed) {
    require_auth(owner);
 
-   check(lbox.size(), "no settings on luckybox");
+   chances chn(_self, _self.value);
+   const auto& cit = chn.get(id);
+   check(cit.owner == owner, "not expected owner");
+   chn.modify(cit, same_payer, [&](auto& c) {
+      c.oseed = oseed;
+   });
 
-   events idx(_self, owner.value);
-   check(idx.find(contract_name.value) == idx.end(), "existing contract name");
+   schemes schm(_self, cit.dealer.value);
+   const auto& sit = schm.get(cit.scheme_name.value);
 
-   for (auto o : lbox) {
-      luckybox.push_back({o.reward, o.value});
+   auto _req = requests(_self, cit.owner, cit.id);
+
+   if(_req) {
+      _req.modify(same_payer, [&](auto& rq) {
+            rq.id = id;
+            rq.owner = owner;
+            rq.scheduled_time = sit.expiration + seconds(sit.withdraw_delay_sec);
+      });
+   } else {
+      _req.emplace(owner, [&](auto& rq) {
+            rq.id = id;
+            rq.owner = owner;
+            rq.scheduled_time = sit.expiration + seconds(sit.withdraw_delay_sec);
+      });
    }
-}
 
-void eosrand::newgacha(name owner, name contract_name, checksum256 rseed, uint8_t lucknum) {
-}
-
-void eosrand::newevent(name owner, name contract_name, name participant, extended_asset value, checksum256 oseed, time_point_sec timelock) {
-   require_auth(owner);
-
-   events idx(_self, _self.value);
-   check(idx.find(contract_name.value) == idx.end(), "exising contract name");
-   check(timelock > current_time_point(), "the expiration time should be in the future");
-   check(participant != get_self(), "the contract itself connot be set as a participant");
-
-   auto data = oseed.extract_as_byte_array();
-   auto hash = eosio::sha256(reinterpret_cast<const char*>(data.data()), data.size());
-
-   idx.emplace(owner, [&](auto& en){
-         en.contract_name = contract_name;
-         en.participant = participant;
-         en.value = value;
-         en.preimage = hash;
-         en.timelock = timelock;
-         en.activated = false;
-   });
-}
-
-void eosrand::setuserseed(name owner, name contract_name, name participant, checksum256 useed) {
-   require_auth(participant);
-
-   events idx(_self, owner.value);
-   const auto& it = idx.get(contract_name.value);
-
-   check(it.participant == participant, "not expected participant");
-
-   idx.modify(it, same_payer, [&](auto& en){
-         en.seed = useed;
-   });
-}
-
-void eosrand::setownseed(name owner, name contract_name, checksum256 oseed) {
-   require_auth(owner);
-
-   events idx(_self, owner.value);
-   const auto& it = idx.get(contract_name.value);
-
-   check(hashcheck(it.seed), "contract not activated");
-
-   auto data = oseed.extract_as_byte_array();
-   auto hash = eosio::sha256(reinterpret_cast<const char*>(data.data()), data.size());
-   check(memcmp((const void*)it.preimage.data(), (const void*)hash.data(), 32) == 0, "invalid seed");
-
-   auto result = mixseed(it.seed, oseed);
-
-   idx.modify(it, same_payer,[&](auto& en){
-         en.seed = result;
-         en.activated = true;
-   });
-}
-
-void eosrand::withdraw(name owner, name contract_name, checksum256 preimage) {
-   events idx(_self, owner.value);
-   const auto& it = idx.get(contract_name.value);
-   check(it.activated, "contract not activated");
-
-   // `preimage` works as a key here.
-   //require_auth(it.recipient);
-
-   auto data = preimage.extract_as_byte_array();
-   auto hash = eosio::sha256(reinterpret_cast<const char*>(data.data()), data.size());
-   check(memcmp((const void*)it.preimage.data(), (const void*)hash.data(), 32) == 0, "invalid preimage");
-
-   transfer_action(it.value.contract, {{_self, "active"_n}}).send(_self, it.participant, it.value.quantity, "");
-
-   idx.erase(it);
-}
-
+   //_req.clear();
+   _req.refresh_schedule();
 /*
-uint8_t eosrand::newevent(name event_name, uint32_t prize_rank, name owner, string srv_seed){
-   require_auth(owner);
+   transaction out;
+   out.actions.emplace_back(
+         permission_level{ _self, "active"_n},
+         _self,
+         "withdraw"_n,
+         std::make_tuple(cit.dealer, cit.owner, cit.id, cit.oseed)
+   );
+   out.delay_sec = sit.withdraw_delay_sec;
+   cancel_deferred(cit.owner.value);
+   out.send(cit.owner.value, cit.owner);
+*/
+}
 
-   events idx(_self, owner.value);
-   check(idx.find(event_name.value) == idx.end(), "existing event name");
+void eosrand::setdseed(name dealer, uint64_t id, checksum256 dseed) {
+   require_auth(dealer);
 
-   auto mb = (tapos_block_prefix() * tapos_block_num() * reinterpret_cast<const uint32_t>(&srv_seed));
-   const char *mc = reinterpret_cast<const char *>(&mb); //mc = mixed Char
-   auto seed = sha256((char *)mc, sizeof(mc));
-   const char *p64 = reinterpret_cast<const char *>(&seed);
-   //uint8_t random_number = (int8_t)p64[0];
-   uint8_t random_number = (abs((int8_t)p64[0]) % (10)) + 1;
+   chances chn(_self, _self.value);
+   const auto& it = chn.get(id);
+   check(it.dealer == dealer, "not expected dealer");
 
-   idx.emplace(owner, [&](auto& gw) {
-         gw.random_number = random_number;
-         gw.seed = seed;
-         gw.event_name = event_name;
-         gw.prize_rank = prize_rank;
+   auto data = dseed.extract_as_byte_array();
+   auto hash = eosio::sha256(reinterpret_cast<const char*>(data.data()), data.size());
+	check(memcmp((const void*)it.dseedhash.data(), (const void*)hash.data(), 32) == 0, "invalid dealer seed");
+
+   // TODO: draw
+   schemes schm(_self, it.dealer.value);
+   const auto& sit = schm.get(it.scheme_name.value);
+
+   vector<int8_t> result;
+   sio4::hash_drbg drbg(mixseed(dseed, it.oseed));
+   drbg.generate_block(result, sizeof(result));
+   print(result.data());
+
+   uint32_t score = 0;
+   memcpy((void*)&score, (const void*)result.data(), sit.precision);
+
+   uint32_t i = 0;
+   for (auto gd : sit.grades) {
+      if (score >= gd.score) {
+         if (gd.limit && sit.out_count[i] >= *(gd.limit)) {
+            i++;
+            continue;
+         }
+         break;
+      }
+      i++;
+   }
+
+   if (i >= sit.grades.size()) {
+      // TODO: not chosen
+      action({_self, "active"_n}, _self, "raincheck"_n,
+         std::make_tuple(dealer, id, score)
+      ).send();
+   }
+
+   auto reward = extended_asset{sit.grades[i].reward, sit.budget.contract};
+
+   // TODO: token transfer
+   transfer_action(sit.budget.contract, {{_self, "active"_n}}).send(_self, it.owner, sit.grades[i].reward, "");
+
+   // TODO: out amount, out_count update
+   schm.modify(sit, same_payer, [&](auto& s) {
+      s.out += sit.grades[i].reward;
+      s.out_count[i]++;
+      check(s.out <= s.budget.quantity, "budget exceeded");
    });
 
-   // print("[ seed ] ", seed," [ uint8_t result ] ", random_number);
-   return random_number;
+   // TODO: delete chance
+   chn.erase(it);
 }
 
-uint8_t eosrand::srand(){
-   auto mb = tapos_block_prefix() * tapos_block_num();   //mb = mixed Block
-   const char *mc = reinterpret_cast<const char *>(&mb); //mc = mixed Char
-   auto result = sha256((char *)mc, sizeof(mc));
-   const char *p64 = reinterpret_cast<const char *>(&result);
-   uint8_t r = (abs((int8_t)p64[0]) % (10)) + 1;
-   print("[ result ] ", result," [ uint8_t result ] ", r);
-   return r;
+void eosrand::withdraw(name owner, uint64_t id) {
+   check(has_auth(_self) || has_auth(owner), "Missing required authority");
+
+   chances chn(_self, _self.value);
+   auto cit = chn.find(id);
+
+   schemes schm(_self, cit->dealer.value);
+   const auto& sit = schm.get(cit->scheme_name.value);
+
+   //cancel_deferred(cit->owner.value);
+   check(sit.activated, "contract not activated");
+   check(sit.expiration < current_time_point(), "contract is not expiration");
+
+   transfer_action(sit.budget.contract, {{_self, "active"_n}}).send(_self, cit->owner, sit.grades.back().reward, "");
+
+   schm.modify(sit, same_payer, [&](auto& s) {
+      s.out += sit.grades.back().reward;
+      s.out_count[sit.grades.size()-1]++;
+      check(s.out <= s.budget.quantity, "budget exceeded");
+   });
+
+  auto _req = requests(_self, cit->owner, cit->id);
+
+   _req.erase();
+   chn.erase(cit);
 }
-*/
+
+void eosrand::clrwithdraws(name owner, uint64_t id) {
+   requests(_self, owner, id).clear();
+}
+
+void eosrand::winreward(name owner, uint64_t id, uint32_t score, extended_asset value) {
+   require_auth(_self);
+}
+
+void eosrand::raincheck(name owner, uint64_t id, uint32_t score) {
+   require_auth(_self);
+}

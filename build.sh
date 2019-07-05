@@ -3,4 +3,5 @@
 mkdir -p build
 pushd build
 cmake ..
-make -j$(nproc)
+#make -j$(nproc)
+make -j12
