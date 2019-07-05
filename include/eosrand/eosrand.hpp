@@ -1,9 +1,11 @@
+#pragma once
+
 #include <eosio/eosio.hpp>
 #include <eosio/asset.hpp>
 #include <eosio/crypto.hpp>
 
-#include <sio4/crypto.hpp>
-#include <sio4/multi_index.hpp>
+#include <sio4/crypto/xxhash.hpp>
+#include <sio4/multi_index_wrapper.hpp>
 
 using namespace eosio;
 using namespace std;
@@ -24,7 +26,7 @@ public:
 
    struct [[eosio::table]] scheme {
       name              scheme_name;
-      uint32_t          withdraw_delay_sec = 0;
+      uint32_t          withdraw_delay_sec = 0; //ms
       time_point_sec    expiration;
       asset             out;
       extended_asset    budget;
@@ -69,12 +71,13 @@ public:
 
    struct [[eosio::table("withdraws")]] withdrawal_request {
       uint64_t       id;
+      name           owner;
       time_point_sec scheduled_time;
 
       uint64_t primary_key()const       { return id; }
       uint64_t by_scheduled_time()const { return static_cast<uint64_t>(scheduled_time.utc_seconds); }
 
-      EOSLIB_SERIALIZE(withdrawal_request, (id)(scheduled_time))
+      EOSLIB_SERIALIZE(withdrawal_request, (id)(owner)(scheduled_time))
    };
 
    typedef multi_index<"withdraws"_n, withdrawal_request,
@@ -123,15 +126,15 @@ public:
    public:
       using multi_index_wrapper::multi_index_wrapper;
 
-      requests(name code, name owner, uint64_t id)
-         : multi_index_wrapper(code, owner, id)
+      requests(name code, name scope, uint64_t id)
+         : multi_index_wrapper(code, scope, id)
       {}
 
       void refresh_schedule();
       void clear();
 
-      inline uint64_t id()const  { return id(); }
-      inline name code()const { return code(); }      // _self
+      inline name self()const    { return code(); } //_self
+      inline name owner()const    { return scope(); } // owner
    };
 
 };

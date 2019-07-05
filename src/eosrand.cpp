@@ -1,6 +1,7 @@
 #include <eosrand/eosrand.hpp>
 #include <eosio/transaction.hpp>
 
+#include <sio4/crypto/drbg.hpp>
 #include "requests.cpp"
 
 using std::string;
@@ -85,16 +86,19 @@ void eosrand::setoseed(name owner, uint64_t id, checksum256 oseed) {
 
    if(_req) {
       _req.modify(same_payer, [&](auto& rq) {
-            rq.scheduled_time = time_point_sec(sit.expiration.sec_since_epoch() + sit.withdraw_delay_sec);
-            rq.id = cit.id;
+            rq.id = id;
+            rq.owner = owner;
+            rq.scheduled_time = sit.expiration + seconds(sit.withdraw_delay_sec);
       });
    } else {
-      _req.emplace(_self, [&](auto& rq) {
-            rq.scheduled_time = time_point_sec(sit.expiration.sec_since_epoch() + sit.withdraw_delay_sec);
-            rq.id = cit.id;
+      _req.emplace(owner, [&](auto& rq) {
+            rq.id = id;
+            rq.owner = owner;
+            rq.scheduled_time = sit.expiration + seconds(sit.withdraw_delay_sec);
       });
    }
 
+   //_req.clear();
    _req.refresh_schedule();
 /*
    transaction out;
@@ -177,7 +181,7 @@ void eosrand::withdraw(name owner, uint64_t id) {
    schemes schm(_self, cit->dealer.value);
    const auto& sit = schm.get(cit->scheme_name.value);
 
-   cancel_deferred(cit->owner.value);
+   //cancel_deferred(cit->owner.value);
    check(sit.activated, "contract not activated");
    check(sit.expiration < current_time_point(), "contract is not expiration");
 
@@ -189,6 +193,9 @@ void eosrand::withdraw(name owner, uint64_t id) {
       check(s.out <= s.budget.quantity, "budget exceeded");
    });
 
+  auto _req = requests(_self, cit->owner, cit->id);
+
+   _req.erase();
    chn.erase(cit);
 }
 
