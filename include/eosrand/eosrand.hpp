@@ -50,16 +50,16 @@ public:
       checksum256 dseedhash;
       checksum256 oseed;
 
-		static uint64_t hash(name dealer, name scheme_name, const checksum256& dseedhash) {
-			std::array<char,2*8+32> data;
-			datastream<char*> ds(data.data(), data.size());
-			ds << dealer.value;
-			ds << scheme_name.value;
-			ds << dseedhash.extract_as_byte_array();
-			return sio4::xxh64(data.data(), data.size());
-		}
+      static uint64_t hash(name dealer, name scheme_name, const checksum256& dseedhash) {
+         std::array<char,2*8+32> data;
+         datastream<char*> ds(data.data(), data.size());
+         ds << dealer.value;
+         ds << scheme_name.value;
+         ds << dseedhash.extract_as_byte_array();
+         return sio4::xxh64(data.data(), data.size());
+      }
 
-		uint64_t primary_key()const { return id; }
+      uint64_t primary_key()const { return id; }
       uint64_t by_owner()const { return owner.value; }
 
       EOSLIB_SERIALIZE(chance, (id)(owner)(dealer)(scheme_name)(dseedhash)(oseed))
@@ -106,8 +106,8 @@ public:
    [[eosio::action]]
    void setdseed(name dealer, uint64_t id, checksum256 dseed);
 
-	[[eosio::action]]
-	void withdraw(name owner, uint64_t id);
+   [[eosio::action]]
+   void withdraw(name owner, uint64_t id);
    typedef action_wrapper<"withdraw"_n, &eosrand::withdraw> withdraw_processed;
 
    [[eosio::action]]
@@ -132,7 +132,6 @@ public:
 
       void refresh_schedule();
       void clear();
-
       inline name self()const    { return code(); } //_self
       inline name owner()const    { return scope(); } // owner
    };
